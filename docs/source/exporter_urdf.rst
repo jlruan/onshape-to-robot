@@ -32,6 +32,8 @@ Here is an example of complete ``config.json`` file, with details below:
         "set_zero_mass_to_fixed": true,
         // Order joints ascending by name (default: false)
         "sort_joints_ascending": true,
+        // Round small floating point values down to zero (default: false)
+        "normalize_small_values": true,
 
         // Override joint properties (default: {})
         "joint_properties": {
@@ -99,3 +101,8 @@ This option sets the mass to 0 for bodies that are :ref:`fixed <fixed-robot>` to
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Sort the joints of each link alphabetically before they are emitted in the URDF. Enable this if you need a stable, name-ordered ``<joint>`` section for downstream tooling.
+
+``normalize_small_values`` *(default: false)*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sets a threshold (``1e-9``) below which every numeric value in the generated URDF is rounded to ``0``. This helps remove infinitesimal artifacts produced during geometry and dynamics computations.

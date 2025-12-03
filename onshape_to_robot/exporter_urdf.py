@@ -22,6 +22,8 @@ class ExporterURDF(Exporter):
         self.use_package_uri_prefix: bool = True
         self.sort_joints_ascending: bool = False
         self._pending_joints: list[tuple[Joint, np.ndarray]] = []
+        self.normalize_small_values: bool = False
+        self.normalize_small_values_threshold: float = 1e-9
 
         if config is not None:
             self.no_dynamics = config.no_dynamics
@@ -29,6 +31,10 @@ class ExporterURDF(Exporter):
             self.set_zero_mass_to_fixed: bool = config.get("set_zero_mass_to_fixed", False)
             self.use_package_uri_prefix = config.get("use_package_uri_prefix", True)
             self.sort_joints_ascending = config.get("sort_joints_ascending", False)
+            self.normalize_small_values = config.get("normalize_small_values", False)
+            self.normalize_small_values_threshold = config.get(
+                "normalize_small_values_threshold", 1e-9
+            )
             additional_xml_file = config.get("additional_xml", None, required=False)
             if isinstance(additional_xml_file, str):
                 self.add_additional_xml(additional_xml_file)
@@ -93,21 +99,21 @@ class ExporterURDF(Exporter):
         self.append(
             '<origin xyz="%g %g %g" rpy="0 0 0"/>'
             % (
-                com[0],
-                com[1],
-                com[2],
+                self.normalize_value(com[0]),
+                self.normalize_value(com[1]),
+                self.normalize_value(com[2]),
             )
         )
-        self.append('<mass value="%g" />' % mass)
+        self.append('<mass value="%g" />' % self.normalize_value(mass))
         self.append(
             '<inertia ixx="%g" ixy="%g"  ixz="%g" iyy="%g" iyz="%g" izz="%g" />'
             % (
-                inertia[0, 0],
-                inertia[0, 1],
-                inertia[0, 2],
-                inertia[1, 1],
-                inertia[1, 2],
-                inertia[2, 2],
+                self.normalize_value(inertia[0, 0]),
+                self.normalize_value(inertia[0, 1]),
+                self.normalize_value(inertia[0, 2]),
+                self.normalize_value(inertia[1, 1]),
+                self.normalize_value(inertia[1, 2]),
+                self.normalize_value(inertia[2, 2]),
             )
         )
         self.append("</inertial>")
@@ -137,7 +143,12 @@ class ExporterURDF(Exporter):
             self.append(f'<material name="{xml_escape(material_name)}">')
             self.append(
                 '<color rgba="%g %g %g %g"/>'
-                % (mesh.color[0], mesh.color[1], mesh.color[2], mesh.color[3])
+                % (
+                    self.normalize_value(mesh.color[0]),
+                    self.normalize_value(mesh.color[1]),
+                    self.normalize_value(mesh.color[2]),
+                    self.normalize_value(mesh.color[3]),
+                )
             )
             self.append("</material>")
 
@@ -156,13 +167,24 @@ class ExporterURDF(Exporter):
 
         self.append("<geometry>")
         if isinstance(shape, Box):
-            self.append('<box size="%g %g %g" />' % tuple(shape.size))
+            self.append(
+                '<box size="%g %g %g" />'
+                % (
+                    self.normalize_value(shape.size[0]),
+                    self.normalize_value(shape.size[1]),
+                    self.normalize_value(shape.size[2]),
+                )
+            )
         elif isinstance(shape, Cylinder):
             self.append(
-                '<cylinder length="%g" radius="%g" />' % (shape.length, shape.radius)
+                '<cylinder length="%g" radius="%g" />'
+                % (
+                    self.normalize_value(shape.length),
+                    self.normalize_value(shape.radius),
+                )
             )
         elif isinstance(shape, Sphere):
-            self.append('<sphere radius="%g" />' % shape.radius)
+            self.append('<sphere radius="%g" />' % self.normalize_value(shape.radius))
         self.append("</geometry>")
 
         if node == "visual":
@@ -170,7 +192,12 @@ class ExporterURDF(Exporter):
             self.append(f'<material name="{xml_escape(material_name)}">')
             self.append(
                 '<color rgba="%g %g %g %g"/>'
-                % (shape.color[0], shape.color[1], shape.color[2], shape.color[3])
+                % (
+                    self.normalize_value(shape.color[0]),
+                    self.normalize_value(shape.color[1]),
+                    self.normalize_value(shape.color[2]),
+                    self.normalize_value(shape.color[3]),
+                )
             )
             self.append("</material>")
 
@@ -203,22 +230,36 @@ class ExporterURDF(Exporter):
 
         self.append(f'<parent link="{joint.parent.name}" />')
         self.append(f'<child link="{joint.child.name}" />')
-        self.append('<axis xyz="%g %g %g"/>' % tuple(joint.axis))
+        self.append(
+            '<axis xyz="%g %g %g" />'
+            % (
+                self.normalize_value(joint.axis[0]),
+                self.normalize_value(joint.axis[1]),
+                self.normalize_value(joint.axis[2]),
+            )
+        )
 
         limits = ""
         if "max_effort" in joint.properties:
-            limits += 'effort="%g" ' % joint.properties["max_effort"]
+            limits += 'effort="%g" ' % self.normalize_value(
+                joint.properties["max_effort"]
+            )
         else:
             limits += 'effort="10" '
 
         if "max_velocity" in joint.properties:
-            limits += 'velocity="%g" ' % joint.properties["max_velocity"]
+            limits += 'velocity="%g" ' % self.normalize_value(
+                joint.properties["max_velocity"]
+            )
         else:
             limits += 'velocity="10" '
 
         joint_limits = joint.properties.get("limits", joint.limits)
         if joint_limits is not None:
-            limits += 'lower="%g" upper="%g" ' % (joint_limits[0], joint_limits[1])
+            limits += 'lower="%g" upper="%g" ' % (
+                self.normalize_value(joint_limits[0]),
+                self.normalize_value(joint_limits[1]),
+            )
         elif joint_type == "revolute":
             limits += f'lower="{-np.pi}" upper="{np.pi}" '
         elif joint_type == "prismatic":
@@ -228,11 +269,18 @@ class ExporterURDF(Exporter):
             self.append(f"<limit {limits}/>")
 
         if "friction" in joint.properties:
-            self.append(f'<joint_properties friction="{joint.properties["friction"]}"/>')
+            self.append(
+                '<joint_properties friction="%g"/>'
+                % self.normalize_value(joint.properties["friction"])
+            )
 
         if joint.relation is not None:
             self.append(
-                f'<mimic joint="{joint.relation.source_joint}" multiplier="{joint.relation.ratio}" />'
+                '<mimic joint="%s" multiplier="%g" />'
+                % (
+                    joint.relation.source_joint,
+                    self.normalize_value(joint.relation.ratio),
+                )
             )
 
         self.append("</joint>")
@@ -253,10 +301,8 @@ class ExporterURDF(Exporter):
 
         self.append("<inertial>")
         self.append('<origin xyz="0 0 0" rpy="0 0 0" />')
-        if self.no_dynamics:
-            self.append('<mass value="0" />')
-        else:
-            self.append('<mass value="1e-9" />')
+        frame_mass = 0.0 if self.no_dynamics else 1e-9
+        self.append('<mass value="%g" />' % self.normalize_value(frame_mass))
         self.append('<inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />')
         self.append("</inertial>")
 
@@ -307,10 +353,19 @@ class ExporterURDF(Exporter):
         for joint, parent_transform in pending:
             self.add_joint(joint, parent_transform)
 
+    def normalize_value(self, value: float) -> float:
+        if not self.normalize_small_values:
+            return value
+        if abs(value) < self.normalize_small_values_threshold:
+            return 0.0
+        return value
+
     def origin(self, matrix: np.ndarray):
         """
         Transforms a transformation matrix into a URDF origin tag
         """
         urdf = '<origin xyz="%g %g %g" rpy="%g %g %g" />'
 
-        return urdf % (*matrix[:3, 3], *rotation_matrix_to_rpy(matrix))
+        values = [*matrix[:3, 3], *rotation_matrix_to_rpy(matrix)]
+        values = [self.normalize_value(value) for value in values]
+        return urdf % tuple(values)
