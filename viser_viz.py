@@ -4,7 +4,6 @@ from __future__ import annotations
 import time
 from pathlib import Path
 import xml.etree.ElementTree as ET
-import eaik
 import numpy as np
 import viser
 import tyro
@@ -15,13 +14,15 @@ def _strip_tag_namespace(tag: str) -> str:
     return tag.split("}", 1)[-1]
 
 
-def get_actuated_joint_names(urdf_path: Path) -> list[str]:
+def get_actuated_joint_info(
+    urdf_path: Path,
+) -> dict[str, dict[str, float | None | str]]:
     """
-    Return the ordered list of non-fixed joint names defined in the URDF.
+    Return ordered joint metadata for non-fixed joints: type and limits.
     """
     tree = ET.parse(urdf_path)
     root = tree.getroot()
-    joint_names: list[str] = []
+    joint_info: dict[str, dict[str, float | None | str]] = {}
     for elem in root.iter():
         if _strip_tag_namespace(elem.tag) != "joint":
             continue
@@ -29,15 +30,32 @@ def get_actuated_joint_names(urdf_path: Path) -> list[str]:
         if joint_type == "fixed":
             continue
         joint_name = elem.attrib.get("name")
-        if joint_name:
-            joint_names.append(joint_name)
-    return joint_names
+        if not joint_name:
+            continue
+        lower = None
+        upper = None
+        for child in elem:
+            if _strip_tag_namespace(child.tag) != "limit":
+                continue
+            lower = child.attrib.get("lower")
+            upper = child.attrib.get("upper")
+            lower = float(lower) if lower is not None else None
+            upper = float(upper) if upper is not None else None
+            break
+        joint_info[joint_name] = {
+            "type": joint_type,
+            "lower": lower,
+            "upper": upper,
+        }
+    return joint_info
 
 
 def create_robot_control_sliders(
     server: viser.ViserServer,
     viser_urdf: ViserUrdf,
     ordered_joint_names: list[str] | None = None,
+    joint_info: dict[str, dict[str, float | None | str]] | None = None,
+    enable_eaik: bool = True,
 ) -> tuple[list[viser.GuiInputHandle[float]], list[float], list[float]]:
     joint_limits = viser_urdf.get_actuated_joint_limits()
     viser_joint_order = list(joint_limits.keys())
@@ -66,40 +84,51 @@ def create_robot_control_sliders(
         }
 
     for joint_name in slider_joint_names:
+        joint_meta = joint_info.get(joint_name) if joint_info else None
+        joint_type = joint_meta.get("type") if joint_meta else "revolute"
         lower, upper = joint_limits[joint_name]
-        lower = lower if lower is not None else -np.pi
-        upper = upper if upper is not None else np.pi
+        if joint_meta:
+            lower = joint_meta.get("lower") if joint_meta.get("lower") is not None else lower
+            upper = joint_meta.get("upper") if joint_meta.get("upper") is not None else upper
+        if joint_type == "prismatic":
+            default_range = 0.1
+        else:
+            default_range = np.pi
+        lower = lower if lower is not None else -default_range
+        upper = upper if upper is not None else default_range
 
         initial_pos = 0.0 if lower < -0.1 and upper > 0.1 else (lower + upper) / 2.0
+        step = 1e-4 if joint_type == "prismatic" else 1e-3
 
         slider = server.gui.add_slider(
             label=joint_name,
             min=lower,
             max=upper,
-            step=1e-3,
+            step=step,
             initial_value=initial_pos,
         )
 
         def tmp(_):
             values_by_name = current_values_by_name()
             fk_config = np.array([values_by_name[name] for name in slider_joint_names])
-            fk = bot.fwdKin(fk_config)
-            hp_fk = hpbot.fwdKin(fk_config)
-            if fk is not None:
-                server.scene.add_point_cloud(
-                    "fk",
-                    points=fk[:3, 3].reshape(1, 3),
-                    colors=(0, 255, 0),
-                    point_size=0.05,
-                )
+            if enable_eaik and bot is not None and hpbot is not None:
+                fk = bot.fwdKin(fk_config)
+                hp_fk = hpbot.fwdKin(fk_config)
+                if fk is not None:
+                    server.scene.add_point_cloud(
+                        "fk",
+                        points=fk[:3, 3].reshape(1, 3),
+                        colors=(0, 255, 0),
+                        point_size=0.05,
+                    )
 
-            if hp_fk is not None:
-                server.scene.add_point_cloud(
-                    "hp_fk",
-                    points=hp_fk[:3, 3].reshape(1, 3),
-                    colors=(0, 0, 255),
-                    point_size=0.05,
-                )
+                if hp_fk is not None:
+                    server.scene.add_point_cloud(
+                        "hp_fk",
+                        points=hp_fk[:3, 3].reshape(1, 3),
+                        colors=(0, 0, 255),
+                        point_size=0.05,
+                    )
 
             viser_cfg = np.array(
                 [
@@ -155,6 +184,8 @@ def main(
     )
 
     global bot, hpbot
+    bot = None
+    hpbot = None
     # H = np.array(
     #     [
     #         [0, 0, 0, -1, 0, -1],
@@ -179,12 +210,26 @@ def main(
             [0.339, 0.601, 1.120, 0.250, 0.000, 0.000, 0.000],
         ]
     )
-    hpbot = eaik.HPRobot(H.T, P.T, None)
-    bot = eaik.UrdfRobot(urdf_path)
-    print("Is spherical:", bot.hasSphericalWrist())
-    print("Kinematic family:", bot.getKinematicFamily())
+    enable_eaik = True
+    try:
+        import eaik
+    except Exception as exc:
+        print(f"Warning: eaik unavailable ({exc}). Disabling eaik visuals.")
+        enable_eaik = False
+    if enable_eaik:
+        try:
+            hpbot = eaik.HPRobot(H.T, P.T, None)
+            bot = eaik.UrdfRobot(urdf_path)
+            print("Is spherical:", bot.hasSphericalWrist())
+            print("Kinematic family:", bot.getKinematicFamily())
+        except Exception as exc:
+            print(f"Warning: eaik init failed ({exc}). Disabling eaik visuals.")
+            hpbot = None
+            bot = None
+            enable_eaik = False
     print("✓ URDF loaded successfully")
-    joint_names = get_actuated_joint_names(urdf_path)
+    joint_info = get_actuated_joint_info(urdf_path)
+    joint_names = list(joint_info.keys())
 
     # Create sliders in GUI that help us move the robot joints.
 
@@ -194,7 +239,13 @@ def main(
             slider_handles,
             initial_slider_config,
             initial_viser_config,
-        ) = create_robot_control_sliders(server, viser_urdf, joint_names)
+        ) = create_robot_control_sliders(
+            server,
+            viser_urdf,
+            joint_names,
+            joint_info=joint_info,
+            enable_eaik=enable_eaik,
+        )
 
     # Add visibility checkboxes.
 

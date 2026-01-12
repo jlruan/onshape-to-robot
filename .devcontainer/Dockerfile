@@ -1,4 +1,4 @@
-FROM ubuntu:latest
+FROM --platform=linux/amd64 ubuntu:latest
 
 # Avoid prompts during install
 ENV DEBIAN_FRONTEND=noninteractive
